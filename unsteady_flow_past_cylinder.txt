@@ -1,0 +1,219 @@
+%% 
+omega = flow_around_cylinder_unsteady;
+function omega = flow_around_cylinder_unsteady
+Re=60;
+%%%%% define the grid %%%%%
+n=101; m=202; % number of grid points
+%% 
+N=n-1; M=m-2; % number of grid intervals: 2 ghost points, theta=-h,2*pi
+h=2*pi/M; % grid spacing based on theta variable
+xi=(0:N)*h; theta=(-1:M)*h; % xi and theta variables on the grid
+%%%%% time-stepping parameters %%%%%
+t_start=0; t_end=500; %vortex street starts at around t=1000
+tspan=[t_start t_end]; 
+%%%%% Initialize vorticity field %%%%%
+omega=zeros(n,m);
+%%%%% Construct the matrix A for psi equation %%%%%
+A=diag(ones(1,n*m)*4)-diag(ones(1,n*m-1),-1)-diag(ones(1,n*m-1),1)...
+    -diag(ones(1,n*m-n),-n)-diag(ones(1,n*m-n),n);
+
+I=eye(m*n,m*n); I=sparse(I);
+%%Set the boundary conditions for psi equation:
+%%%cylinder-wall:
+cylinder=1:n:1+(m-1)*n;
+A(cylinder,:)=I(cylinder,:);
+
+%%%free-stream:
+free_stream=n:n:n*m;
+A(free_stream,:)=I(free_stream,:);
+%% 
+
+%%%bottom-periodic-boundary:
+for bottom_periodic=1:1:n
+    A(bottom_periodic,:)=I(bottom_periodic,:)-I(bottom_periodic+(m-2)*n,:);
+    %A(bottom_periodic,bottom_periodic+(m-2)*n)=-1;
+end
+%%%top_periodic_boundary
+for top_periodic=1+(m-1)*n:1:m*n
+    A(top_periodic,:)=I(top_periodic,:)-I(top_periodic-m*n+2*n,:);
+    %i=top_periodic-(m-1)*n;
+    %A(top_periodic,i)=-1;
+end
+clear I;
+A=sparse(A);
+%%%%% Find the LU decomposition %%%%%
+[L,U]=lu(A); clear A;
+%%%%% Compute any time-independent constants %%%%%
+
+omega_tilda_constante=(h^2).*exp(2*xi(:));
+
+%%%%% advance solution using ode23 %%%%%
+options=odeset('RelTol', 1.e-03);
+omega=omega(2:n-1,2:m-1); % strip boundary values for ode23
+omega=omega(:); % make a column vector
+%% 
+
+[t,omega]=ode23(@(t,omega)omega_eq(omega,L,U,omega_tilda_constante,n,m,theta,xi,h,Re),tspan, omega, options);
+%%%%% expand omega to include boundaries %%%%%
+temp=zeros(n,m);
+temp(2:n-1,2:m-1)=reshape(omega(end,:),n-2,m-2);
+omega=temp; clear temp;
+%%%%% compute stream function (needed for omega boundary values) %%%%%
+omega_tilda=zeros(n,m);
+for i=1:1:n
+    for j=1:1:m
+        omega_tilda(i,j)=omega_tilda_constante(i)*omega(i,j);
+    end
+end
+%%%boundary_conditions_for_omega
+omega_tilda(1,:)=0;
+omega_tilda(:,1)=0;
+omega_tilda(:,m)=0
+omega_tilda(n,:)=sin(theta(:)).*exp(xi(n));
+omega_tilda=omega_tilda(:);
+psi=U\(L\omega_tilda);
+psi=reshape(psi,n,m);
+clear omega_tilda;
+%%%%% set omega boundary conditions %%%%%
+omega(n,:)=0;
+omega(:,1)=omega(:,m-1);
+omega(:,m)=omega(:,2);
+omega(1,:)=(1/(2*h^2))*(psi(3,:)-8*psi(2,:));
+
+%%%%% plot scalar vorticity field %%%%%
+plot_Re60(omega,t_end);
+end
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+function d_omega_dt=omega_eq(omega,L,U,omega_tilda_constante,n,m,theta,xi,h,Re)
+%%%%% expand omega to include boundary points %%%%%
+temp=zeros(n,m);
+index1=2:n-1; index2=2:m-1;
+temp(index1,index2)=reshape(omega,n-2,m-2);
+omega=temp; clear temp;
+%%%%% compute stream function %%%%%
+omega_tilda=zeros(n,m);
+for i=1:1:n
+    for j=1:1:m
+        omega_tilda(i,j)=omega_tilda_constante(i)*omega(i,j);
+    end
+end
+%%%boundary_conditions_for_omega
+omega_tilda(1,:)=0;
+omega_tilda(:,1)=0;
+omega_tilda(:,m)=0;
+omega_tilda(n,:)=sin(theta(:)).*exp(xi(n));
+omega_tilda=omega_tilda(:);
+psi=U\(L\omega_tilda);
+psi=reshape(psi,n,m);
+clear omega_tilda;
+omega(n,:)=0;
+omega(:,1)=omega(:,m-1);
+omega(:,m)=omega(:,2);
+omega(1,:)=(1/(2*h^2))*(psi(3,:)-8*psi(2,:));
+%%%%% compute derivatives of omega %%%%%
+d_omega_dt=zeros(n,m);
+
+for i=2:1:n-1
+    for j=2:1:m-1
+        first=omega(i+1,j)+omega(i-1,j)+omega(i,j+1)+omega(i,j-1)-4*omega(i,j);
+        second=(psi(i+1,j)-psi(i-1,j))*(omega(i,j+1)-omega(i,j-1))-(psi(i,j+1)-psi(i,j-1))*(omega(i+1,j)-omega(i-1,j));
+        d_omega_dt(i,j)=(exp(-2*xi(i))/(h^2))*((2/Re)*first+(1/4)*second);
+    end
+end
+
+
+d_omega_dt=d_omega_dt(index1,index2);
+d_omega_dt=d_omega_dt(:);
+end
+function plot_Re60_movie
+Re=60;
+%%%%% Initialize movie file %%%%%
+writerObj = VideoWriter('movie.mp4','MPEG-4');
+writerObj.Quality = 100;
+writerObj.FrameRate=24;
+open(writerObj);
+input_file='.\fields\Re_60_';
+%%%%% Loop over fields to construct plot and put in movie file %%%%%
+nfields=1000;
+for ij=1:nfields
+load([input_file num2str(ij)],'omega');
+%%%%% xi-theta grid %%%%%
+n=size(omega,1); m=size(omega,2);
+N=n-1; M=m-2;
+h=2*pi/M; %grid spacing
+xi=(0:N)*h; theta=(-1:M)*h;
+[XI, THETA] = meshgrid(xi,theta);
+%%%%%% x-y grid %%%%%
+nx=640; ny=480; % number of pixels in x and y
+xmin=-1.5; xmax=20; ymax=((xmax-xmin)/2)*ny/nx; ymin=-ymax;
+x=linspace(xmin,xmax,nx+1); y=linspace(ymin,ymax,ny+1);
+[X,Y]=meshgrid(x,y);
+%%%%% construct interpolation points %%%%%
+xi_i=0.5*log(X.^2+Y.^2);
+theta_i=wrapTo2Pi(atan2(Y,X));
+%%%%% interpolate %%%%%
+omega_xy=interp2(XI,THETA,omega',xi_i,theta_i);
+%%%%% set omega to zero inside cylinder %%%%%
+omega_xy(xi_i<0)=0;
+%%%%% set colormap for contours %%%%%
+levels=linspace(-1,1,1000);
+v=[levels(1) levels(end)];
+cmap=flipud(jet(length(levels)));
+colormap(cmap);
+%%%%% plot color contours %%%%%
+imagesc(x,y,omega_xy,v); hold on;
+%%%%% draw black circle for cylinder %%%%%
+t=linspace(0,2*pi, 1000);
+a=cos(t); b=sin(t);
+fill(a,b,[0 0 0]);
+%%%%% beautify plot %%%%%
+set(gca,'YDir','normal');
+axis([xmin xmax ymin ymax]); set(gcf,'color','w'); axis equal; axis off;
+text(xmin+0.75*(xmax-xmin),ymin+0.08*(ymax-ymin),...
+['t = ', num2str(ij,'%3.0f')],'FontSize',22,'Color','k');
+%%%%% add frame to movie file %%%%%
+frame=getframe(gcf);
+writeVideo(writerObj,frame);
+close;
+fprintf('%g\n',ij)
+end
+close(writerObj);
+end
+function plot_Re60(omega,t_plot)
+% Plot vorticity for Re = 60 from flow_past_circle_unsteady
+Re=60;
+% xi-theta grid
+n=size(omega,1); m=size(omega,2);
+N=n-1; M=m-2;
+h=2*pi/M; %grid spacing
+xi=(0:N)*h; theta=(-1:M)*h; %xi and theta variables on the grid
+[XI, THETA] = meshgrid(xi,theta);
+% x-y grid
+nx=640; ny=480; %number of pixels in x and y
+xmin=-1.5; xmax=10; ymax=((xmax-xmin)/2)*ny/nx; ymin=-ymax;
+x=linspace(xmin,xmax,nx+1); y=linspace(ymin,ymax,ny+1);
+[X,Y]=meshgrid(x,y);
+%construct interpolation points
+xi_i=0.5*log(X.^2+Y.^2);
+theta_i=wrapTo2Pi(atan2(Y,X));
+omega_xy=interp2(XI,THETA,omega',xi_i,theta_i);
+%inside circle
+omega_xy(xi_i<0)=0;
+%set colormap for contours
+levels=linspace(-1,1,1000);
+v=[levels(1) levels(end)];
+cmap=jet(length(levels));
+cmap=flipud(cmap);
+colormap(cmap);
+%color contours
+imagesc(x,y,omega_xy,v); hold on;
+%draw black circle for cylinder
+t=linspace(0,2*pi, 1000);
+a=cos(t); b=sin(t);
+fill(a,b,[0 0 0]);
+%neaten plot
+set(gca,'YDir','normal');
+axis([xmin xmax ymin ymax]); set(gcf,'color','w'); axis equal; axis off;
+text(xmin+0.75*(xmax-xmin),ymin+0.08*(ymax-ymin),...
+['t = ', num2str(t_plot,'%3.1f')],'FontSize',22,'Color','k');
+end
